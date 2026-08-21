@@ -1,29 +1,85 @@
-# Welcome to your Lovable project
+# LeetCode Profile Analyzer
 
-This project was built with [Lovable](https://lovable.dev).
+Paste a public LeetCode profile URL and get a dark analytics dashboard with solved-problem
+breakdown, acceptance/submission statistics and full contest rating history — built from real
+public LeetCode data only.
 
-## Build with Lovable
+## Architecture
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+```
+React (TanStack Start route + components)
+        ↓  useServerFn / TanStack Query
+Server function  src/lib/leetcode.functions.ts   (validation + in-memory TTL cache)
+        ↓
+LeetCode client  src/lib/leetcode.server.ts      (GraphQL request + response mapping)
+        ↓
+https://leetcode.com/graphql
 ```
 
-## Built with
+> Note: this workspace runs on the fixed TanStack Start (React + TypeScript + Vite) stack, so the
+> backend is implemented with type-safe server functions instead of Spring Boot, and caching uses a
+> configurable in-process TTL cache instead of PostgreSQL. The layering (controller → service →
+> client → mapper) is preserved: route → server function → client → mapper.
 
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+## Data source
+
+A single GraphQL query (`profileAnalysis` in `src/lib/leetcode.server.ts`) fetches:
+
+| Field | Source |
+| --- | --- |
+| Username, real name, avatar, country, ranking | `matchedUser.profile` |
+| Solved per difficulty | `matchedUser.submitStats.acSubmissionNum` |
+| Attempted questions / total submissions | `matchedUser.submitStats.totalSubmissionNum` |
+| Problem totals per difficulty | `allQuestionsCount` |
+| Contest rating / rank / attendance | `userContestRanking` |
+| Contest history (chart) | `userContestRankingHistory` |
+
+Derived metrics:
+
+- `acceptanceRate = acceptedSubmissions / totalSubmissions * 100` (null when submissions are 0)
+- `attempting = attemptedQuestions - solvedQuestions`
+- `highestRating = max(rating)` over attended contests
+
+No credentials, cookies or browser automation are used. Only `leetcode.com` is contacted.
+
+## URL handling
+
+`src/lib/leetcode-url.ts` accepts `https://leetcode.com/u/name/`, `.../u/name`, `leetcode.com/u/name`,
+legacy `/name` paths and bare usernames. Other hosts, empty input and malformed usernames are
+rejected before any network call (no SSRF surface).
+
+## Data integrity
+
+Missing metrics are returned as `null` and rendered as `N/A`; they are listed in the
+`unavailable` array and surfaced in the dashboard notice. Nothing is estimated or hardcoded.
+
+## Error handling
+
+| Case | Message |
+| --- | --- |
+| Invalid URL / username | Inline validation error under the input |
+| Unknown profile | "LeetCode profile not found." |
+| HTTP 429 | "LeetCode is temporarily rate-limiting requests. Please try again shortly." |
+| 5xx / malformed | "Unable to fetch LeetCode statistics right now. Please try again later." |
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LEETCODE_CACHE_TTL_MINUTES` | `15` | Snapshot cache duration (server-side only) |
+
+## Running
+
+```bash
+npm install
+npm run dev     # http://localhost:8080
+npm run build
+```
+
+## Limitations
+
+- Contest data is only exposed for users who have attended rated contests; otherwise all contest
+  cards show `N/A`.
+- LeetCode exposes aggregate submission counters only, so acceptance rate is derived from those
+  aggregates; per-submission history is not public.
+- Cache is in-process, so it resets on redeploy.
